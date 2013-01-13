@@ -55,7 +55,7 @@ public:
         if (temp_dq > CV_PI) temp_dq -= CV_PI;
         if (temp_theta > CV_PI) temp_theta -= CV_PI;
 
-        if (abs(temp_dq - temp_theta) < CV_PI/6 || (abs(temp_dq + temp_theta) > CV_PI - CV_PI/6 && abs(temp_dq + temp_theta) < CV_PI + CV_PI/6))
+        if (abs(temp_dq - temp_theta) < CV_PI/10 || (abs(temp_dq + temp_theta) > CV_PI - CV_PI/10 && abs(temp_dq + temp_theta) < CV_PI + CV_PI/10))
             return true;
         else{
             //cout<<temp_dq*180/CV_PI<<"\t"<<temp_theta*180/CV_PI<<endl;
@@ -72,7 +72,7 @@ public:
 class SWT
 {
     Mat ip_img;
-    Mat gradX, gradY, edge_map, stroke_width, rays_img;
+    Mat gradX, gradY, edge_map, stroke_width, rays_img, refined_stroke_width;
     vector<Ray> rays;
 
 public:
@@ -84,6 +84,8 @@ public:
     void show_images();
     void get_rays();
     void get_swt();
+    void median_filter_rays();
+    int get_median(vector<Point>);
     void draw_ray(Ray , bool);
     void draw_rays();
 };
@@ -94,6 +96,7 @@ SWT::SWT(Mat &image)
     gradX = Mat::zeros(ip_img.size(), CV_32FC1);
     gradY = Mat::zeros(ip_img.size(), CV_32FC1);
     stroke_width = Mat(ip_img.size(), CV_8UC1, Scalar(255));
+    refined_stroke_width = Mat(ip_img.size(), CV_8UC1, Scalar(255));
     rays_img = Mat::zeros(ip_img.size(), CV_8UC1);
 }
 
@@ -113,20 +116,6 @@ void SWT::calculate_gradX()
     kernel_grad_x.at<float>(1,2) =  2.0/4;
     kernel_grad_x.at<float>(2,2) =  1.0/4;
     filter2D(ip_img, gradX, 5, kernel_grad_x, Point(1,1));
-
-    float xmax = 0, xmin = 255;
-    for (int i=0; i<gradX.rows; i++)
-    {
-        const float* gradXi = gradX.ptr<float>(i);
-        for (int j=0; j<gradX.cols; j++){
-            xmax = std::max(gradXi[j], xmax);
-            xmin = std::min(gradXi[j], xmin);
-        }
-    }
-    cout<<"Max :"<<xmax<<endl;
-    cout<<"Min :"<<xmin<<endl;
-
-    //cout<<gradX;
 }
 
 void SWT::calculate_gradY()
@@ -139,8 +128,6 @@ void SWT::calculate_gradY()
     kernel_grad_y.at<float>(2,1) = -2.0/4;
     kernel_grad_y.at<float>(2,2) = -1.0/4;
     filter2D(ip_img, gradY, 5, kernel_grad_y, Point(1,1));
-    cout<<ip_img.depth()<<"\t"<<ip_img.type()<<endl;
-    cout<<gradY.depth()<<"\t"<<gradY.type()<<endl;
 }
 
 void SWT::get_rays()
@@ -212,23 +199,58 @@ void SWT::get_rays()
 
 void SWT::get_swt()
 {
-    for (int r=0; r<rays.size(); r++)
+    for (uint r=0; r<rays.size(); r++)
     {
         vector<Point> points = rays[r].points;
         float length = rays[r].get_length();
-        for (int p=0; p<points.size(); p++)
+        for (uint p=0; p<points.size(); p++)
         {
             stroke_width.at<uchar>(points[p].y, points[p].x) = std::min((int)stroke_width.at<uchar>(points[p].y, points[p].x), (int)length);
         }
     }
 }
 
+int SWT::get_median(vector<Point> pts)
+{
+    std::set<uchar> swt;
+    for (uint p=0; p<pts.size(); p++)
+        swt.insert(stroke_width.at<uchar>(pts[p].y, pts[p].x));
+
+    int median_pos = swt.size();
+    int count = 0;
+    uchar median = 255;
+
+    set<uchar>::iterator it = swt.begin();
+    for (it = swt.begin(); it!=swt.end(); ++it){
+        if (count == median_pos/2){
+            median = *it;
+            break;
+        }
+        count++;
+    }
+    return median;
+}
+
+void SWT::median_filter_rays()
+{
+    for (uint r=0; r<rays.size(); r++)
+    {
+        vector<Point> pts = rays[r].points;
+        int median = get_median(pts);
+        for (uint p = 0; p<pts.size(); p++)
+            if (stroke_width.at<uchar>(pts[p].y, pts[p].x) > median)
+                refined_stroke_width.at<uchar>(pts[p].y, pts[p].x) = median;
+            else
+                refined_stroke_width.at<uchar>(pts[p].y, pts[p].x) = stroke_width.at<uchar>(pts[p].y, pts[p].x);
+    }
+}
+
 void SWT::draw_rays()
 {
-    for (int r=0; r<rays.size(); r++)
+    for (uint r=0; r<rays.size(); r++)
     {
         vector<Point> points = rays[r].points;
-        for (int p=0; p<points.size(); p++)
+        for (uint p=0; p<points.size(); p++)
             rays_img.at<uchar>(points[p].y, points[p].x) = 255;
     }
     imshow("rays", rays_img);
@@ -237,7 +259,7 @@ void SWT::draw_rays()
 void SWT::draw_ray(Ray r, bool res)
 {
     vector<Point> points = r.points;
-    for (int p=0; p<points.size(); p++)
+    for (uint p=0; p<points.size(); p++)
         if (res)
             rays_img.at<uchar>(points[p].y, points[p].x) = 255;
         else
@@ -249,17 +271,18 @@ void SWT::show_images()
     imshow("image", ip_img);
     imshow("edge_map", edge_map);
     imshow("stroke_width", stroke_width);
+    imshow("refined_stroke_width", refined_stroke_width);
+
     //imshow("edgeX", gradX);
     //imshow("edgeY", gradY);
     waitKey(0);
-
 }
 
 int main()
 {
-    String img_path = "images/wiki.png";
+    String img_path = "images/O.jpg";
     Mat img = imread(img_path, 0);
-    resize(img, img, Size(), 0.5, 0.5, INTER_CUBIC);
+    resize(img, img, Size(), 1, 1, INTER_CUBIC);
 /*
     // testing using Black Box image
     img = Mat::zeros(400, 400, CV_8UC1);
@@ -301,8 +324,14 @@ int main()
     cout<<"calculating stroke widths ...\n";
     swt.get_rays();
     swt.get_swt();
+    //swt.show_images();
+    cout<<"refining stroke widths ...\n";
+    swt.median_filter_rays();
     //swt.draw_rays();
+    cout<<"Displaying Results ...\n";
     swt.show_images();
+    cout<<"Finished !!!";
+
 
     return 0;
 }
